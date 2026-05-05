@@ -4,4 +4,3 @@ requests
 groq
 Pillow
 playwright==1.45.0
-supabase

@@ -2,11 +2,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from playwright.async_api import async_playwright
 from groq import Groq
-from supabase import create_client
 import base64
 import os
 import uuid
-from datetime import datetime
 
 app = FastAPI(
     title="Agente IA",
@@ -24,10 +22,6 @@ app.add_middleware(
 )
 
 client = Groq(api_key="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")
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 ultima_pantalla = ""
 historial_pantallas = []
@@ -114,31 +108,6 @@ async def crear_contexto_navegador(p, carpeta_descargas="/tmp/descargas"):
         window.chrome = { runtime: {} };
     """)
     return navegador, contexto
-
-async def subir_a_supabase(ruta_archivo, nombre_archivo, usuario):
-    try:
-        with open(ruta_archivo, "rb") as f:
-            contenido = f.read()
-        
-        fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ruta_storage = f"{usuario}/{fecha}_{nombre_archivo}"
-        
-        supabase.storage.from_("documentos-ovznet").upload(
-            ruta_storage,
-            contenido,
-            {"content-type": "application/pdf"}
-        )
-        
-        url_firmada = supabase.storage.from_("documentos-ovznet").create_signed_url(
-            ruta_storage,
-            3600
-        )
-        
-        print(f"Archivo subido: {ruta_storage}", flush=True)
-        return url_firmada.get("signedURL", "")
-    except Exception as e:
-        print(f"Error subiendo a Supabase: {e}", flush=True)
-        return ""
 
 async def ejecutar_agente(pagina, tarea, max_pasos=15, prompt_extra=""):
     pasos = []
@@ -303,7 +272,6 @@ async def importar_documentos(request: Request):
     datos = await request.json()
     usuario = datos.get("usuario", "")
     password = datos.get("password", "")
-    tipo_tramite = datos.get("tipo_tramite", "")
 
     tarea = f"""Entra en OVZnet con usuario '{usuario}' y contraseña '{password}'.
 Una vez dentro ve al menú Documentos en la barra superior y haz click en el submenú Documentos.
@@ -322,14 +290,13 @@ FLUJO PARA DESCARGAR DOCUMENTOS EN OVZNET:
 8. Espera a que se descargue y responde tarea completada
 """
 
-    urls_documentos = []
+    documentos_descargados = []
 
     async with async_playwright() as p:
         carpeta_descargas = f"/tmp/descargas_{uuid.uuid4().hex}"
         os.makedirs(carpeta_descargas, exist_ok=True)
 
         navegador, contexto = await crear_contexto_navegador(p, carpeta_descargas)
-
         pagina = await contexto.new_page()
 
         async def manejar_descarga(download):
@@ -337,12 +304,12 @@ FLUJO PARA DESCARGAR DOCUMENTOS EN OVZNET:
             ruta = f"{carpeta_descargas}/{nombre}"
             await download.save_as(ruta)
             print(f"Descargado: {nombre}", flush=True)
-            url = await subir_a_supabase(ruta, nombre, usuario)
-            if url:
-                urls_documentos.append({
-                    "nombre": nombre,
-                    "url": url
-                })
+            with open(ruta, "rb") as f:
+                contenido_base64 = base64.b64encode(f.read()).decode()
+            documentos_descargados.append({
+                "nombre": nombre,
+                "base64": contenido_base64
+            })
 
         pagina.on("download", manejar_descarga)
 
@@ -358,6 +325,6 @@ FLUJO PARA DESCARGAR DOCUMENTOS EN OVZNET:
         return {
             "estado": "proceso terminado",
             "pasos": pasos,
-            "documentos_descargados": urls_documentos,
+            "documentos_descargados": documentos_descargados,
             "ver_pantallas": "https://agente-ganera.onrender.com/pantalla"
         }
